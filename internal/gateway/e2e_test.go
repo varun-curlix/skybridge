@@ -585,11 +585,32 @@ func captureClientHelloBytes(t *testing.T, serverName string) []byte {
 // the very same rejected connection disagreed — confusing during exactly the kind of cross-log
 // debugging this was found by. ListenClients must now log the same effective (SNI-resolved) org in
 // both.
+// syncBuffer wraps bytes.Buffer with a mutex so it's safe as a slog handler's writer when the test
+// goroutine polls String() concurrently with ListenClients' own goroutine writing a log line —
+// bytes.Buffer itself has no internal synchronization, so unguarded concurrent Write/String use is
+// a real data race (caught by -race), not just a hypothetical one.
+type syncBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (b *syncBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+func (b *syncBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
+}
+
 func TestListenClientsLogsSNIResolvedOrgOnRejection(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	var logBuf bytes.Buffer
+	var logBuf syncBuffer
 	logger := slog.New(slog.NewTextHandler(&logBuf, nil))
 
 	g := gateway.New(logger)
